@@ -12,6 +12,29 @@ pixi run test
 GitHub Actions (`.github/workflows/fetch-and-convert.yml`) runs on the 1st and 15th of each month
 (the site's snapshot cadence) and uploads `tds-gtfs-<date>` and `tds-raw-<date>` artifacts.
 
+## Consuming the feeds
+
+Each run publishes a GitHub release tagged with the source date (for example `2026-11-01`). Every operator is a
+separate asset, so one URL goes straight into a GTFS ingester:
+
+```
+https://github.com/<owner>/<repo>/releases/latest/download/220_northwestern_stage_lines.zip   # newest, stable URL
+https://github.com/<owner>/<repo>/releases/download/2026-11-01/220_northwestern_stage_lines.zip # that snapshot
+```
+
+`feeds.json` (also a release asset) lists every feed with its URLs, SHA-256, size, trip count, validity dates and
+agency timezone. Zips are byte-for-byte reproducible, so a checksum only changes when the content does.
+File names are `<agency_id>_<slug>.zip`. Scheduled runs (1st and 15th) skip a snapshot that already has a release;
+a manual run (`workflow_dispatch`) re-uploads and refreshes it, and an older snapshot never becomes "latest".
+Each release also has `transcor.dmfr.json`, a minimal [DMFR](https://github.com/transitland/distributed-mobility-feed-registry)
+with one `f-tds~...` feed and one `o-tds~...` operator per feed (own IDs, no links to existing registry IDs), pointing at
+the `latest` URLs, so a registry can be told to fetch every feed. Operators that already have a current feed published
+elsewhere are left out (`src/tds_gtfs/external_feeds.json`, see `docs/other-feeds.md`); operators whose other feed is
+stale are included. The release notes list operators added or removed since the previous release.
+`pixi run release-index --tag <date> --source-date <date>` writes `feeds.json`, the DMFR and the notes locally
+(`--repo` defaults to `ethanc8/transcor-gtfs-converter`). The registry-side clean-up that follows importing the DMFR
+is written up in `random/atlas-changes.md`.
+
 ## Documentation
 
 * [docs/timezones.md](docs/timezones.md): how times and timezones work in the TDS data and what the converter does

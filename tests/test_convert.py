@@ -203,3 +203,64 @@ def test_stop_desc_only_for_configured_operators(tmp_path, monkeypatch):
     r = [x for x in rows if x["stop_id"] == "0"][0]
     assert r["stop_name"] == "Boston, MA (Dalton Street)" and r["stop_desc"] == long_name
     assert [x for x in rows if x["stop_id"] == "1"][0]["stop_desc"] == ""
+
+
+def test_zips_are_deterministic(tmp_path):
+    make_raw(tmp_path / "raw", [feature("t1", [("09:00:00", "09:00:00"), ("10:00:00", "10:00:00")])])
+    convert(tmp_path / "raw", tmp_path / "a")
+    import time
+    time.sleep(1.1)
+    convert(tmp_path / "raw", tmp_path / "b")
+    assert (tmp_path / "a" / "A_agency_a.zip").read_bytes() == (tmp_path / "b" / "A_agency_a.zip").read_bytes()
+
+
+def test_release_index_and_notes(tmp_path):
+    from tds_gtfs.release import build_index, build_notes
+    make_raw(tmp_path / "raw", [feature("t1", [("09:00:00", "09:00:00"), ("10:00:00", "10:00:00")])])
+    convert(tmp_path / "raw", tmp_path / "gtfs")
+    idx = build_index(tmp_path / "gtfs", "me/repo", "2026-11-01", "2026-11-01")
+    f = idx["feeds"][0]
+    assert f["file"] == "A_agency_a.zip" and f["trips"] == 1 and len(f["sha256"]) == 64
+    assert f["url_latest"] == "https://github.com/me/repo/releases/latest/download/A_agency_a.zip"
+    assert f["url_versioned"] == "https://github.com/me/repo/releases/download/2026-11-01/A_agency_a.zip"
+    assert f["feed_end_date"] == "20271102" and f["timezone_source"] == "inferred"
+    notes = build_notes(idx, "https://example/run/1")
+    assert "A_agency_a.zip" in notes and "(inferred)" in notes and "Built by https://example/run/1" in notes
+
+
+def _index(*specs):
+    """specs: (agency_id, name, status)"""
+    from tds_gtfs.release import LATEST, onestop_words
+    feeds = []
+    for aid, name, status in specs:
+        file = f"{aid}_{name.lower().replace(' ', '_')}.zip"
+        w = onestop_words(name)
+        feeds.append({"agency_id": aid, "agency_name": name, "file": file, "url_latest": LATEST.format(repo="o/r", file=file),
+                      "url_versioned": "", "trips": 1, "feed_end_date": "20271102", "agency_timezone": "America/New_York",
+                      "timezone_source": "verified", "external_feed_status": status, "in_dmfr": status != "current",
+                      "dmfr_feed_id": f"f-tds~{w}" if status != "current" else None,
+                      "dmfr_operator_id": f"o-tds~{w}" if status != "current" else None})
+    return {"source_date": "2026-11-15", "release_tag": "2026-11-15", "repository": "o/r", "feeds": feeds}
+
+
+def test_dmfr_has_own_ids_and_skips_current_feeds():
+    from tds_gtfs.release import build_dmfr
+    d = build_dmfr(_index(("1", "Peter Pan Bus Lines", "stale"), ("2", "Amtrak", "current"), ("3", "C&J Bus Lines", "none")))
+    assert [f["id"] for f in d["feeds"]] == ["f-tds~peter~pan~bus~lines", "f-tds~c~j~bus~lines"]
+    f = d["feeds"][0]
+    assert f["spec"] == "gtfs" and f["urls"] == {"static_current": "https://github.com/o/r/releases/latest/download/1_peter_pan_bus_lines.zip"}
+    assert f["operators"] == [{"onestop_id": "o-tds~peter~pan~bus~lines", "name": "Peter Pan Bus Lines",
+                               "associated_feeds": [{"gtfs_agency_id": "1"}]}]
+    assert "supersedes_ids" not in json.dumps(d) and "tags" not in json.dumps(d)   # never linked to existing IDs
+
+
+def test_release_notes_report_added_and_removed_agencies():
+    from tds_gtfs.release import build_notes
+    prev = _index(("1", "Peter Pan Bus Lines", "stale"), ("2", "Amtrak", "current"))
+    cur = _index(("1", "Peter Pan Bus Lines", "stale"), ("3", "New Operator", "none"))
+    n = build_notes(cur, "", prev, "2026-11-01")
+    assert "## Changes since 2026-11-01" in n and "**Added:** New Operator (`3`)" in n and "**Removed:** Amtrak (`2`)" in n
+    assert "No operators were added or removed." in build_notes(prev, "", prev, "2026-11-01")
+    assert "This is the first release." in build_notes(cur, "", None, "")
+    renamed = _index(("1", "Peter Pan Lines", "stale"), ("2", "Amtrak", "current"))
+    assert "Download file renamed" in build_notes(renamed, "", prev, "2026-11-01")

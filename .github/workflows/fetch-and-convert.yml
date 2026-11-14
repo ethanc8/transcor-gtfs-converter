@@ -1,4 +1,4 @@
-name: Fetch maps.tds.ai and build GTFS
+name: Fetch maps.tds.ai, build GTFS and publish a release
 
 on:
   schedule:
@@ -11,12 +11,19 @@ on:
         required: false
 
 permissions:
-  contents: read
+  contents: write   # create the GitHub release and its tag
+
+concurrency:
+  group: tds-gtfs-release
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_DATE_INPUT: ${{ inputs.source_date }}
     steps:
       - uses: actions/checkout@v4
 
@@ -30,15 +37,41 @@ jobs:
 
       - name: Download raw data
         run: |
-          ARGS=""
-          if [ -n "${{ inputs.source_date }}" ]; then ARGS="--source-date ${{ inputs.source_date }}"; fi
-          pixi run fetch --out data/raw $ARGS
+          ARGS=()
+          if [ -n "$SOURCE_DATE_INPUT" ]; then ARGS=(--source-date "$SOURCE_DATE_INPUT"); fi
+          pixi run fetch --out data/raw "${ARGS[@]}"
 
       - name: Convert to GTFS
         run: pixi run convert --raw data/raw --out data/gtfs
 
       - id: meta
         run: echo "date=$(python3 -c "import json;print(json.load(open('data/raw/manifest.json'))['source_date'])")" >> "$GITHUB_OUTPUT"
+
+      # The previous release (newest tag older than this snapshot) supplies the added/removed-operator notes.
+      - name: Find the previous release
+        id: prev
+        env:
+          TAG: ${{ steps.meta.outputs.date }}
+        run: |
+          PREV=$(gh release list --limit 200 --json tagName --jq '.[].tagName' | sort | awk -v t="$TAG" '$0 < t' | tail -n 1 || true)
+          echo "tag=$PREV" >> "$GITHUB_OUTPUT"
+          if [ -n "$PREV" ]; then
+            mkdir -p data/previous
+            gh release download "$PREV" --pattern feeds.json --dir data/previous || rm -rf data/previous
+          fi
+
+      - name: Write feeds.json, DMFR and release notes
+        run: |
+          ARGS=()
+          if [ -f data/previous/feeds.json ]; then
+            ARGS=(--previous data/previous/feeds.json --previous-tag "${{ steps.prev.outputs.tag }}")
+          fi
+          pixi run release-index \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "${{ steps.meta.outputs.date }}" \
+            --source-date "${{ steps.meta.outputs.date }}" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            "${ARGS[@]}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -53,3 +86,33 @@ jobs:
           path: data/raw/
           if-no-files-found: error
           retention-days: 90
+
+      # One release per source snapshot, tagged with its date (e.g. 2026-11-01). Every feed is a separate
+      # asset with a stable file name, so
+      #   https://github.com/<owner>/<repo>/releases/latest/download/<file>.zip
+      # always serves the newest feed. A scheduled run whose snapshot already has a release does nothing;
+      # a manual run re-uploads (--clobber) and refreshes the notes. An older snapshot never becomes "latest".
+      - name: Publish GitHub release
+        env:
+          TAG: ${{ steps.meta.outputs.date }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          FILES=(data/gtfs/*.zip data/gtfs/feeds.json data/gtfs/transcor.dmfr.json data/gtfs/summary.json data/gtfs/diagnostics.json)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$EVENT" = "schedule" ]; then
+              echo "Release $TAG already exists; nothing to publish."
+              exit 0
+            fi
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+            gh release edit "$TAG" --notes-file data/release-notes.md
+          else
+            NEWEST=$(gh release list --limit 200 --json tagName --jq '.[].tagName' | sort | tail -n 1 || true)
+            LATEST=true
+            if [ -n "$NEWEST" ] && [[ "$TAG" < "$NEWEST" ]]; then LATEST=false; fi
+            gh release create "$TAG" "${FILES[@]}" \
+              --title "TDS GTFS $TAG" \
+              --notes-file data/release-notes.md \
+              --target "$GITHUB_SHA" \
+              --latest="$LATEST"
+          fi

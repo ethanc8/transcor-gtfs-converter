@@ -34,11 +34,34 @@ def main(argv=None) -> int:
     q.add_argument("--date", default="2026-11-16", help="service date to quote, YYYY-MM-DD")
     q.add_argument("--out", type=Path, default=Path("data/booking-queries.md"))
 
+    r = sub.add_parser("release-index", help="write feeds.json and release notes for a GitHub release")
+    r.add_argument("--gtfs", type=Path, default=Path("data/gtfs"))
+    r.add_argument("--repo", default="ethanc8/transcor-gtfs-converter", help="owner/name, used in the download URLs")
+    r.add_argument("--previous", type=Path, help="feeds.json of the previous release (for the added/removed notes)")
+    r.add_argument("--previous-tag", default="", help="tag of the previous release")
+    r.add_argument("--tag", required=True, help="release tag (the source date)")
+    r.add_argument("--source-date", required=True)
+    r.add_argument("--run-url", default="")
+    r.add_argument("--notes-out", type=Path, default=Path("data/release-notes.md"))
+
     a = p.parse_args(argv)
     if a.cmd == "fetch":
         return fetch_mod.fetch_all(a.out, a.source_date, a.workers, a.max_failure_rate, a.agency)
     if a.cmd == "import-har":
         print(har_mod.import_har(a.har, a.out))
+        return 0
+    if a.cmd == "release-index":
+        import json
+
+        from . import release
+        idx = release.build_index(a.gtfs, a.repo, a.tag, a.source_date)
+        prev = json.loads(a.previous.read_text()) if a.previous and a.previous.exists() else None
+        (a.gtfs / "feeds.json").write_text(json.dumps(idx, indent=1))
+        dmfr = release.build_dmfr(idx)
+        (a.gtfs / release.DMFR_FILE).write_text(json.dumps(dmfr, indent=2) + "\n")
+        a.notes_out.parent.mkdir(parents=True, exist_ok=True)
+        a.notes_out.write_text(release.build_notes(idx, a.run_url, prev, a.previous_tag))
+        print(f"{len(idx['feeds'])} feeds indexed, {len(dmfr['feeds'])} in the DMFR")
         return 0
     if a.cmd == "queries":
         from . import queries

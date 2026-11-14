@@ -408,7 +408,11 @@ def write_feed(path: Path, a: AgencyData, version: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         for name, data in files.items():
-            z.writestr(name, data)
+            # fixed timestamp so identical content gives identical bytes (stable checksums between releases)
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            z.writestr(info, data)
 
 
 def convert(raw: Path, out: Path, apply_corrections: bool = False) -> dict:
