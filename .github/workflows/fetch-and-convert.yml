@@ -1,0 +1,55 @@
+name: Fetch maps.tds.ai and build GTFS
+
+on:
+  schedule:
+    # The site publishes snapshots on the 1st and 15th; run mid-day UTC to be safe.
+    - cron: "0 12 1,15 * *"
+  workflow_dispatch:
+    inputs:
+      source_date:
+        description: "Snapshot date YYYY-MM-DD (default: newest offered by the site)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.11.3
+        with:
+          locked: true
+          cache: true
+
+      - name: Run tests
+        run: pixi run test
+
+      - name: Download raw data
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.source_date }}" ]; then ARGS="--source-date ${{ inputs.source_date }}"; fi
+          pixi run fetch --out data/raw $ARGS
+
+      - name: Convert to GTFS
+        run: pixi run convert --raw data/raw --out data/gtfs
+
+      - id: meta
+        run: echo "date=$(python3 -c "import json;print(json.load(open('data/raw/manifest.json'))['source_date'])")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tds-gtfs-${{ steps.meta.outputs.date }}
+          path: data/gtfs/
+          if-no-files-found: error
+          retention-days: 90
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tds-raw-${{ steps.meta.outputs.date }}
+          path: data/raw/
+          if-no-files-found: error
+          retention-days: 90

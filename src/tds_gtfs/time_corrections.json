@@ -1,0 +1,8 @@
+{
+  "_comment": "Optional, OFF by default (enable with `convert --apply-time-corrections`). Stops whose coordinate-derived timezone is stop_timezone have raw = (portal local time) - observed_offset_minutes, all year. Correct raw for a service date is (portal local) - (stop UTC offset - agency UTC offset), so the correction is observed_offset - that gap, which changes with DST; trips are split by season.",
+  "402": {
+    "stop_timezone": "America/Phoenix",
+    "observed_offset_minutes": 120,
+    "why": "Limousine Express Arizona stops: portal minus raw was +2h in both Nov 2026 and Aug (LXUS 2001); a correct Pacific clock needs +1h in winter and +2h in summer (Arizona has no DST)."
+  }
+}
